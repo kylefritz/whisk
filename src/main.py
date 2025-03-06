@@ -26,7 +26,7 @@ def main():
     args = parse_args()
 
     with timer("Loading model"):
-        model = whisper.load_model("turbo")
+        model = whisper.load_model("tiny.en") # turbo (bigger by slower) 
 
     with timer("Transcribing"):
         result = model.transcribe(args.file)
