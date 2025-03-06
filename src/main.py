@@ -11,17 +11,17 @@ import os
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Transcribe audio using Whisper')
-    parser.add_argument(
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
         '-f', '--file',
         type=str,
-        required=False,
         help='Path to the audio file to transcribe'
     )
-    parser.add_argument(
+    group.add_argument(
         '-d', '--duration',
         type=float,
         default=5,
-        help='Recording duration in seconds (default: 5)'
+        help='Recording duration in seconds (default: 5, only used when recording from microphone)'
     )
     return parser.parse_args()
 
@@ -49,21 +49,27 @@ def timer(description):
 @timer("Overall")
 def main():
     args = parse_args()
-
     
     with tempfile.NamedTemporaryFile(suffix='.wav') as temp_wav:
-        with timer("Recording"):
-            record_audio(temp_wav.name, args.duration)
+        input_file = None
+        
+        if args.file:
+            input_file = args.file
+            print(f"📂 Using input file: {args.file}")
+        else:
+            with timer("Recording"):
+                record_audio(temp_wav.name, args.duration)
+            input_file = temp_wav.name
 
         with timer("Loading model"):
             model = whisper.load_model("tiny.en")
 
         with timer("Transcribing"):
-            result = model.transcribe(temp_wav.name)
+            result = model.transcribe(input_file)
             print(result["text"])
 
         with timer("Get audio duration"):
-            duration = sf.info(temp_wav.name).duration
+            duration = sf.info(input_file).duration
             print(f"file duration= {duration:.2f}s")
     
 
