@@ -6,6 +6,7 @@ import soundfile as sf
 import numpy as np
 import time
 import threading
+import queue
 import os
 from contextlib import contextmanager
 
@@ -32,6 +33,12 @@ class WhisperApp(ctk.CTk):
         self.title("Whisper Transcription")
         self.geometry("700x500")
         
+        # Recording state variables
+        self.is_recording = False
+        self.audio_queue = queue.Queue()
+        self.recording_thread = None
+        self.recording_stream = None
+        
         # Configure grid layout
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=0)  # Header doesn't expand
@@ -54,119 +61,165 @@ class WhisperApp(ctk.CTk):
         # Create button frame
         self.button_frame = ctk.CTkFrame(self)
         self.button_frame.grid(row=3, column=0, padx=20, pady=(5, 20), sticky="ew")
-        self.button_frame.grid_columnconfigure((0, 1, 2), weight=1)
+        self.button_frame.grid_columnconfigure((0, 1), weight=1)
         
         # Create buttons
-        self.record_button = ctk.CTkButton(self.button_frame, text="Record (5s)", command=self.record_audio)
+        self.record_button = ctk.CTkButton(
+            self.button_frame, 
+            text="Record", 
+            command=self.toggle_recording,
+            fg_color="#28a745",  # Green color for record button
+            hover_color="#218838"
+        )
         self.record_button.grid(row=0, column=0, padx=10, pady=10)
         
-        self.record_custom_button = ctk.CTkButton(self.button_frame, text="Record Custom", command=self.record_custom)
-        self.record_custom_button.grid(row=0, column=1, padx=10, pady=10)
-        
         self.browse_button = ctk.CTkButton(self.button_frame, text="Open Audio File", command=self.browse_file)
-        self.browse_button.grid(row=0, column=2, padx=10, pady=10)
-        
-        # Duration slider for custom recording
-        self.duration_frame = ctk.CTkFrame(self)
-        self.duration_frame.grid(row=4, column=0, padx=20, pady=(0, 20), sticky="ew")
-        
-        self.duration_label = ctk.CTkLabel(self.duration_frame, text="Recording Duration (seconds):")
-        self.duration_label.pack(side="left", padx=(10, 0))
-        
-        self.duration_slider = ctk.CTkSlider(self.duration_frame, from_=1, to=60, number_of_steps=59)
-        self.duration_slider.pack(side="left", fill="x", expand=True, padx=10)
-        self.duration_slider.set(5)
-        
-        self.duration_value = ctk.CTkLabel(self.duration_frame, text="5")
-        self.duration_value.pack(side="left", padx=(0, 10))
-        
-        # Bind slider to update the value label
-        self.duration_slider.configure(command=self.update_duration_value)
+        self.browse_button.grid(row=0, column=1, padx=10, pady=10)
         
         # Initialize whisper model
         self.model = None
-
-    def update_duration_value(self, value):
-        self.duration_value.configure(text=f"{int(value)}")
-
-    def record_audio(self):
-        self.transcribe_audio(record_duration=5)
         
-    def record_custom(self):
-        duration = int(self.duration_slider.get())
-        self.transcribe_audio(record_duration=duration)
+    def toggle_recording(self):
+        if not self.is_recording:
+            self.start_recording()
+        else:
+            self.stop_recording()
+    
+    def start_recording(self):
+        self.is_recording = True
+        self.record_button.configure(
+            text="Stop Recording", 
+            fg_color="#dc3545",  # Red color for stop button
+            hover_color="#c82333"
+        )
+        self.browse_button.configure(state="disabled")
         
+        # Clear previous results
+        self.result_text.delete("0.0", "end")
+        self.update_status("🎤 Recording... (click Stop when finished)")
+        
+        # Start recording in a separate thread
+        self.audio_queue = queue.Queue()
+        self.recording_thread = threading.Thread(target=self._record_audio_thread, daemon=True)
+        self.recording_thread.start()
+    
+    def _record_audio_thread(self):
+        """Record audio in a separate thread"""
+        samplerate = 44100
+        channels = 1
+        
+        def audio_callback(indata, frames, time, status):
+            if status:
+                print(f"Status: {status}")
+            self.audio_queue.put(indata.copy())
+        
+        with sd.InputStream(samplerate=samplerate, channels=channels, callback=audio_callback):
+            while self.is_recording:
+                time.sleep(0.1)
+    
+    def stop_recording(self):
+        if not self.is_recording:
+            return
+            
+        self.is_recording = False
+        self.record_button.configure(
+            text="Record", 
+            fg_color="#28a745",  # Green color for record button
+            hover_color="#218838"
+        )
+        
+        self.update_status("Processing recording...")
+        
+        # Wait for recording thread to finish
+        if self.recording_thread and self.recording_thread.is_alive():
+            self.recording_thread.join(timeout=1.0)
+            
+        # Process the recorded audio
+        threading.Thread(target=self._process_recording, daemon=True).start()
+    
+    def _process_recording(self):
+        try:
+            # Get all audio data from queue
+            audio_data = []
+            while not self.audio_queue.empty():
+                audio_data.append(self.audio_queue.get())
+                
+            if not audio_data:
+                self.update_status("❌ No audio recorded")
+                self.browse_button.configure(state="normal")
+                return
+                
+            # Concatenate all audio chunks
+            audio_array = np.concatenate(audio_data, axis=0)
+            
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
+                temp_filename = temp_wav.name
+                
+            samplerate = 44100
+            sf.write(temp_filename, audio_array, samplerate)
+            
+            # Transcribe the audio
+            self._transcribe_file(temp_filename, is_temp_file=True)
+            
+        except Exception as e:
+            self.update_status(f"❌ Error: {str(e)}")
+            self.result_text.insert("0.0", f"Error: {str(e)}")
+            self.browse_button.configure(state="normal")
+    
     def browse_file(self):
         file_path = ctk.filedialog.askopenfilename(
             title="Select Audio File",
             filetypes=(("Audio Files", "*.mp3 *.wav *.m4a *.flac"), ("All Files", "*.*"))
         )
         if file_path:
-            self.transcribe_audio(file_path=file_path)
+            self._transcribe_file(file_path)
 
     def update_status(self, text):
         self.status_label.configure(text=text)
         self.update_idletasks()
-        
-    def transcribe_audio(self, file_path=None, record_duration=None):
-        """Transcribe audio either from file or recording"""
+    
+    def _transcribe_file(self, file_path, is_temp_file=False):
+        """Transcribe an audio file"""
         # Clear previous result
         self.result_text.delete("0.0", "end")
         
-        # Run transcription in a separate thread to avoid UI freezing
-        threading.Thread(target=self._transcribe_thread, args=(file_path, record_duration), daemon=True).start()
+        # Disable buttons during transcription
+        self.record_button.configure(state="disabled")
+        self.browse_button.configure(state="disabled")
+        
+        # Run transcription in a separate thread
+        threading.Thread(
+            target=self._transcribe_thread, 
+            args=(file_path, is_temp_file), 
+            daemon=True
+        ).start()
     
-    def _transcribe_thread(self, file_path=None, record_duration=None):
+    def _transcribe_thread(self, file_path, is_temp_file=False):
         try:
-            with tempfile.NamedTemporaryFile(suffix='.wav', delete=False) as temp_wav:
-                temp_filename = temp_wav.name
-                
-                input_file = None
-                
-                if file_path:
-                    input_file = file_path
-                    self.update_status(f"📂 Using input file: {os.path.basename(file_path)}")
-                else:
-                    self.update_status(f"🎤 Recording for {record_duration} seconds...")
-                    self.record_button.configure(state="disabled")
-                    self.record_custom_button.configure(state="disabled")
-                    self.browse_button.configure(state="disabled")
-                    
-                    # Record audio
-                    samplerate = 44100
-                    recording = sd.rec(
-                        int(record_duration * samplerate),
-                        samplerate=samplerate,
-                        channels=1,
-                        dtype=np.float32
-                    )
-                    sd.wait()
-                    sf.write(temp_filename, recording, samplerate)
-                    
-                    input_file = temp_filename
-                    self.update_status("✅ Recording finished")
-                
-                # Load the model if not already loaded
-                if self.model is None:
-                    self.update_status("Loading Whisper model...")
-                    self.model = whisper.load_model("tiny.en")
-                
-                # Transcribe
-                self.update_status("🔍 Transcribing...")
-                result = self.model.transcribe(input_file)
-                
-                # Display result
-                self.result_text.insert("0.0", result["text"])
-                
-                # Get file duration
-                duration = sf.info(input_file).duration
-                
-                # Update status with complete info
-                self.update_status(f"✅ Transcription complete (Audio duration: {duration:.2f}s)")
-                
-            # Clean up temporary file if we created one
-            if file_path is None and os.path.exists(temp_filename):
-                os.unlink(temp_filename)
+            self.update_status("📂 Processing audio file...")
+            
+            # Load the model if not already loaded
+            if self.model is None:
+                self.update_status("Loading Whisper model...")
+                self.model = whisper.load_model("tiny.en")
+            
+            # Transcribe
+            self.update_status("🔍 Transcribing...")
+            result = self.model.transcribe(file_path)
+            
+            # Display result
+            self.result_text.insert("0.0", result["text"])
+            
+            # Get file duration
+            duration = sf.info(file_path).duration
+            
+            # Update status with complete info
+            self.update_status(f"✅ Transcription complete (Audio duration: {duration:.2f}s)")
+            
+            # Clean up temporary file
+            if is_temp_file and os.path.exists(file_path):
+                os.unlink(file_path)
                 
         except Exception as e:
             self.update_status(f"❌ Error: {str(e)}")
@@ -174,7 +227,6 @@ class WhisperApp(ctk.CTk):
         finally:
             # Re-enable buttons
             self.record_button.configure(state="normal")
-            self.record_custom_button.configure(state="normal")
             self.browse_button.configure(state="normal")
 
 if __name__ == "__main__":
