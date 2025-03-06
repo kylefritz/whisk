@@ -1,4 +1,4 @@
-# README.md
+# whisk
 
 Friendly UI/CLI for OpenAI Whisper tool.
 
