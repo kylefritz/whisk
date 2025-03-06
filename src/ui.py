@@ -9,6 +9,7 @@ import threading
 import queue
 import os
 from contextlib import contextmanager
+import pyperclip
 
 # Set appearance mode and default color theme
 ctk.set_appearance_mode("System")  # Modes: "System" (standard), "Dark", "Light"
@@ -44,7 +45,7 @@ class WhisperApp(ctk.CTk):
         self.grid_rowconfigure(0, weight=0)  # Header doesn't expand
         self.grid_rowconfigure(1, weight=1)  # Text area expands
         self.grid_rowconfigure(2, weight=0)  # Status doesn't expand
-        self.grid_rowconfigure(3, weight=0)  # Buttons don't expand
+        self.grid_rowconfigure(3, weight=0)  # Button doesn't expand
         
         # Create header
         self.header = ctk.CTkLabel(self, text="Whisper Audio Transcription", font=ctk.CTkFont(size=20, weight="bold"))
@@ -63,7 +64,7 @@ class WhisperApp(ctk.CTk):
         self.button_frame.grid(row=3, column=0, padx=20, pady=(5, 20), sticky="ew")
         self.button_frame.grid_columnconfigure((0, 1), weight=1)
         
-        # Create buttons
+        # Create record button
         self.record_button = ctk.CTkButton(
             self.button_frame, 
             text="Record", 
@@ -73,8 +74,15 @@ class WhisperApp(ctk.CTk):
         )
         self.record_button.grid(row=0, column=0, padx=10, pady=10)
         
-        self.browse_button = ctk.CTkButton(self.button_frame, text="Open Audio File", command=self.browse_file)
-        self.browse_button.grid(row=0, column=1, padx=10, pady=10)
+        # Create copy button
+        self.copy_button = ctk.CTkButton(
+            self.button_frame, 
+            text="Copy to Clipboard", 
+            command=self.copy_to_clipboard,
+            fg_color="#007bff",  # Blue color for copy button
+            hover_color="#0069d9"
+        )
+        self.copy_button.grid(row=0, column=1, padx=10, pady=10)
         
         # Initialize whisper model
         self.model = None
@@ -92,7 +100,6 @@ class WhisperApp(ctk.CTk):
             fg_color="#dc3545",  # Red color for stop button
             hover_color="#c82333"
         )
-        self.browse_button.configure(state="disabled")
         
         # Clear previous results
         self.result_text.delete("0.0", "end")
@@ -146,7 +153,6 @@ class WhisperApp(ctk.CTk):
                 
             if not audio_data:
                 self.update_status("❌ No audio recorded")
-                self.browse_button.configure(state="normal")
                 return
                 
             # Concatenate all audio chunks
@@ -165,16 +171,7 @@ class WhisperApp(ctk.CTk):
         except Exception as e:
             self.update_status(f"❌ Error: {str(e)}")
             self.result_text.insert("0.0", f"Error: {str(e)}")
-            self.browse_button.configure(state="normal")
     
-    def browse_file(self):
-        file_path = ctk.filedialog.askopenfilename(
-            title="Select Audio File",
-            filetypes=(("Audio Files", "*.mp3 *.wav *.m4a *.flac"), ("All Files", "*.*"))
-        )
-        if file_path:
-            self._transcribe_file(file_path)
-
     def update_status(self, text):
         self.status_label.configure(text=text)
         self.update_idletasks()
@@ -184,9 +181,8 @@ class WhisperApp(ctk.CTk):
         # Clear previous result
         self.result_text.delete("0.0", "end")
         
-        # Disable buttons during transcription
+        # Disable button during transcription
         self.record_button.configure(state="disabled")
-        self.browse_button.configure(state="disabled")
         
         # Run transcription in a separate thread
         threading.Thread(
@@ -225,9 +221,17 @@ class WhisperApp(ctk.CTk):
             self.update_status(f"❌ Error: {str(e)}")
             self.result_text.insert("0.0", f"Error: {str(e)}")
         finally:
-            # Re-enable buttons
+            # Re-enable button
             self.record_button.configure(state="normal")
-            self.browse_button.configure(state="normal")
+    
+    def copy_to_clipboard(self):
+        """Copy the transcription text to clipboard"""
+        text = self.result_text.get("0.0", "end").strip()
+        if text:
+            pyperclip.copy(text)
+            self.update_status("✅ Text copied to clipboard")
+        else:
+            self.update_status("❌ No text to copy")
 
 if __name__ == "__main__":
     app = WhisperApp()
